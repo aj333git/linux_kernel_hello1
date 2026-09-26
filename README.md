@@ -2,7 +2,7 @@
 
 **F# Linux Kernel Module Development Tool**
 
-Build a Linux kernel module workflow with F#, .NET, Process, module signing, loading, unloading, and watch mode.
+Automate a Linux kernel module workflow with F#, .NET's `Process` API, module signing, loading, unloading, and a file-watch development loop.
 
 ---
 
@@ -18,11 +18,11 @@ insmod
 dmesg
 ```
 
-When experimenting with kernel modules, repeating these commands manually quickly becomes part of the development overhead.
+Repeating these commands by hand on every code change quickly becomes its own source of development overhead.
 
 This project uses **F# and .NET** to automate that workflow.
 
-The F# script acts as a **user-space development orchestrator** for a kernel-space artifact. It starts Linux user-space programs such as `make`, `sudo`, `rmmod`, `insmod`, and `dmesg`, while the actual kernel module continues to execute inside the Linux kernel.
+The F# script acts as a **user-space development orchestrator** for a kernel-space artifact. It starts Linux user-space programs such as `make`, `sudo`, `rmmod`, `insmod`, and `dmesg`, while the kernel module itself continues to execute inside the Linux kernel.
 
 The complete development pipeline is:
 
@@ -38,7 +38,7 @@ LOAD NEW MODULE
 SHOW KERNEL OUTPUT
 ```
 
-The important architectural point is that **F# does not directly control the kernel module**. It orchestrates the Linux processes that interact with the kernel module.
+The key architectural point is that **F# does not directly control the kernel module** — it orchestrates the Linux processes that interact with it.
 
 ---
 
@@ -74,9 +74,7 @@ loaded into kernel
 hello module running
 ```
 
-The old module is removed before the new module is loaded.
-
-The loop therefore ends with the **new module loaded**, rather than leaving the kernel without the module.
+The old module is removed before the new module is loaded, so the loop always ends with the **new module loaded**, rather than leaving the kernel without the module at all.
 
 ---
 
@@ -90,9 +88,7 @@ The script uses:
 System.Diagnostics.Process
 ```
 
-to start external Linux programs.
-
-A simplified example is:
+to start external Linux programs. A simplified example:
 
 ```fsharp
 use proc = new Process()
@@ -115,15 +111,13 @@ This creates a clear boundary:
 | Linux kernel     | Module loading, execution and logging       |
 | Kernel module    | `hello_init()`, `hello_exit()`, `pr_info()` |
 
-`System.Diagnostics.Process` is therefore being used as the **user-space process-control layer**.
+`System.Diagnostics.Process` is therefore used as the **user-space process-control layer**, not as a way of touching the kernel itself.
 
 ---
 
 ## 3. F# Is Not the Kernel Module
 
-The kernel module remains C code.
-
-A minimal module looks like:
+The kernel module remains ordinary C code:
 
 ```c
 static int __init hello_init(void)
@@ -141,9 +135,7 @@ module_init(hello_init);
 module_exit(hello_exit);
 ```
 
-The F# script does not replace this kernel-space code.
-
-Instead, it manages the development lifecycle around it:
+The F# script does not replace this kernel-space code — it manages the development lifecycle around it:
 
 ```text
 F# script
@@ -159,7 +151,7 @@ F# script
   +-- dmesg
 ```
 
-This separation is important.
+This separation is important:
 
 **F# = development automation**
 
@@ -170,8 +162,6 @@ This separation is important.
 ---
 
 ## 4. BUILD — Compile the Kernel Module
-
-The first stage is:
 
 ```fsharp
 let build () =
@@ -184,55 +174,39 @@ let build () =
         failwith "BUILD FAILED"
 ```
 
-The script launches:
-
-```bash
-make
-```
-
-The kernel module build system produces:
-
-```text
-hello.ko
-```
-
-The script also verifies that the resulting module actually exists:
+The script launches `make`, and the kernel module build system produces `hello.ko`. It also verifies the resulting artifact actually exists before continuing:
 
 ```fsharp
 if not (File.Exists(Path.Combine(workDir, moduleFile))) then
     failwith "hello.ko was not created"
 ```
 
-This means the pipeline does not blindly continue after a failed build.
+This means the pipeline never blindly continues after a failed build.
 
 ---
 
 ## 5. SIGN — Prepare the Kernel Module
 
-The next stage signs the generated module.
-
-The project uses the kernel's:
+The next stage signs the generated module using the kernel's own:
 
 ```text
 scripts/sign-file
 ```
 
-utility together with:
+utility, together with a key and certificate pair:
 
 ```text
 MOK.key
 MOK.crt
 ```
 
-The signing command is conceptually:
+Conceptually, the signing command is:
 
 ```bash
 sign-file sha256 MOK.key MOK.crt hello.ko
 ```
 
-The F# implementation checks that the required signing infrastructure exists before attempting the operation.
-
-For example:
+The F# implementation checks that the required signing infrastructure exists before attempting the operation:
 
 ```fsharp
 if not (File.Exists(signKey)) then
@@ -242,35 +216,25 @@ if not (File.Exists(signCert)) then
     failwithf "Signing certificate not found: %s" signCert
 ```
 
-The actual signing command is executed through:
+The actual signing command runs through:
 
 ```fsharp
 runAndPrint "sudo" ...
 ```
 
-The result is a signed:
-
-```text
-hello.ko
-```
-
-ready for the loading stage.
+The result is a signed `hello.ko`, ready for the loading stage.
 
 ---
 
 ## 6. REMOVE — Unload the Existing Module
 
-Before loading the new module, the script checks whether the old module is already present.
-
-It executes:
+Before loading the new module, the script checks whether the old module is already present by running:
 
 ```bash
 lsmod
 ```
 
-and searches for the module name.
-
-The relevant logic is:
+and searching for the module name:
 
 ```fsharp
 if loaded then
@@ -279,15 +243,7 @@ if loaded then
         (sprintf "rmmod %s" moduleName)
 ```
 
-This avoids blindly running:
-
-```bash
-rmmod hello
-```
-
-when the module is not loaded.
-
-The purpose is simple:
+This avoids blindly running `rmmod hello` when the module isn't even loaded. The purpose is simple:
 
 ```text
 old hello module
@@ -297,13 +253,11 @@ rmmod
 removed from kernel
 ```
 
-This creates a clean state for loading the newly built module.
+This leaves a clean state for loading the newly built module.
 
 ---
 
 ## 7. LOAD — Insert the New Module
-
-The next stage loads the newly built and signed module:
 
 ```fsharp
 let load () =
@@ -318,21 +272,19 @@ let load () =
         failwith "INSMOD FAILED"
 ```
 
-Conceptually:
+Conceptually, this is:
 
 ```bash
 sudo insmod hello.ko
 ```
 
-At this point the module is loaded into the Linux kernel.
-
-The module's initialization function executes:
+At this point the module is loaded into the Linux kernel, and its initialization function executes:
 
 ```c
 hello_init()
 ```
 
-which generates the kernel log message:
+which produces the kernel log message:
 
 ```text
 hello: module2 loaded
@@ -342,21 +294,11 @@ hello: module2 loaded
 
 ## 8. SHOW — Read Kernel Output
 
-The final stage observes the kernel log.
-
-The project uses:
-
-```bash
-dmesg
-```
-
-and filters the output:
+The final stage observes the kernel log using `dmesg`, filtered down to the module's own lines:
 
 ```bash
 dmesg | grep 'hello:' | tail -n 10
 ```
-
-The F# function is:
 
 ```fsharp
 let show () =
@@ -367,9 +309,7 @@ let show () =
         "bash -c \"dmesg | grep 'hello:' | tail -n 10\""
 ```
 
-This gives the developer immediate feedback after the module has been loaded.
-
-The development loop therefore becomes:
+This gives immediate feedback right after the module has been loaded, closing the loop:
 
 ```text
 source change
@@ -389,8 +329,6 @@ inspect kernel output
 
 ## 9. The Complete Development Function
 
-The entire workflow is deliberately simple:
-
 ```fsharp
 let devLoop () =
     build ()
@@ -400,11 +338,7 @@ let devLoop () =
     show ()
 ```
 
-This is a synchronous orchestration pipeline.
-
-Each operation must complete before the next operation begins.
-
-The dependency chain is:
+This is a synchronous orchestration pipeline — each operation must complete before the next begins:
 
 ```text
 BUILD
@@ -422,49 +356,35 @@ INSMOD
 DMESG
 ```
 
-This ordering matters.
-
-You cannot reliably load the new module before successfully producing the module artifact.
+This ordering matters: you cannot reliably load the new module before successfully producing the module artifact, and you cannot safely insert a new module while the old one still occupies its name.
 
 ---
 
 ## 10. Command-Line Interface
 
-The script exposes individual operations as well as the complete loop.
+The script exposes each individual operation as well as the complete loop:
 
 | Command  | Purpose                                                 |
 | -------- | ------------------------------------------------------- |
 | `build`  | Build `hello.ko`                                        |
-| `sign`   | Sign `hello.ko`                                         |
-| `unload` | Remove `hello` from the kernel                          |
-| `load`   | Load `hello.ko`                                         |
-| `show`   | Display kernel messages                                 |
-| `loop`   | Execute the complete development pipeline               |
-| `watch`  | Automatically execute the pipeline after source changes |
+| `sign`   | Sign `hello.ko`                                          |
+| `unload` | Remove `hello` from the kernel                           |
+| `load`   | Load `hello.ko`                                          |
+| `show`   | Display kernel messages                                  |
+| `loop`   | Execute the complete development pipeline                |
+| `watch`  | Automatically execute the pipeline after source changes  |
 
 Examples:
 
 ```bash
 dotnet fsi kloop.fsx build
-```
-
-```bash
 dotnet fsi kloop.fsx sign
-```
-
-```bash
 dotnet fsi kloop.fsx unload
-```
-
-```bash
 dotnet fsi kloop.fsx load
-```
-
-```bash
 dotnet fsi kloop.fsx show
 ```
 
-The complete workflow is:
+The complete workflow:
 
 ```bash
 dotnet fsi kloop.fsx loop
@@ -474,29 +394,19 @@ dotnet fsi kloop.fsx loop
 
 ## 11. WATCH MODE
 
-The most useful part for iterative development is watch mode.
-
-Run:
+The most useful part for iterative development is watch mode:
 
 ```bash
 dotnet fsi kloop.fsx watch
 ```
 
-The script monitors:
-
-```text
-hello.c
-```
-
-using:
+The script monitors `hello.c` using:
 
 ```fsharp
 File.GetLastWriteTimeUtc(sourceFile)
 ```
 
-It periodically checks whether the timestamp has changed.
-
-The core idea is:
+periodically checking whether the timestamp has changed:
 
 ```fsharp
 if currentWrite <> lastWrite then
@@ -504,7 +414,7 @@ if currentWrite <> lastWrite then
     devLoop ()
 ```
 
-Therefore:
+So the loop becomes:
 
 ```text
 edit hello.c
@@ -524,7 +434,7 @@ INSMOD
 DMESG
 ```
 
-This turns the script into a lightweight kernel-module development loop.
+This turns the script into a lightweight kernel-module development loop — save the file, and everything downstream happens automatically.
 
 ---
 
@@ -551,7 +461,7 @@ psi.RedirectStandardError <- true
 psi.UseShellExecute <- false
 ```
 
-Then the process is started:
+then starts the process:
 
 ```fsharp
 use proc = new Process()
@@ -570,41 +480,29 @@ let error =
     proc.StandardError.ReadToEnd()
 ```
 
-Finally:
+and finally:
 
 ```fsharp
 proc.WaitForExit()
 ```
 
-ensures the external command has finished.
-
-The function returns:
+ensures the external command has actually finished before the function returns:
 
 ```fsharp
 proc.ExitCode, output, error
 ```
 
-This gives the orchestration layer three important pieces of information:
-
-1. Exit status
-2. Standard output
-3. Standard error
+This gives the orchestration layer three essential pieces of information: exit status, standard output, and standard error.
 
 ---
 
 ## 13. Why `use` Matters
 
-The code uses:
-
 ```fsharp
 use proc = new Process()
 ```
 
-rather than simply creating a process object.
-
-In F#, `use` provides automatic disposal for disposable resources.
-
-Conceptually:
+In F#, `use` provides automatic disposal for disposable resources:
 
 ```text
 create Process
@@ -620,15 +518,13 @@ wait
 dispose
 ```
 
-This is important because `Process` represents an operating-system resource.
-
-The F# object itself lives in the managed environment, while the actual external process is managed by Linux.
+This matters because `Process` represents a real operating-system resource. The F# object itself lives in the managed environment, while the actual external process is managed by Linux — `use` guarantees that resource is released deterministically, without relying on the garbage collector or manual cleanup.
 
 ---
 
 ## 14. The User-Space / Kernel-Space Boundary
 
-The architecture can be understood as three layers.
+The architecture is best understood as three layers.
 
 ### Layer 1 — F# / .NET
 
@@ -675,21 +571,17 @@ Linux user space
 Linux kernel
 ```
 
-`System.Diagnostics.Process` operates primarily on the **user-space side of this boundary**.
-
-It does not provide kernel-module functionality itself.
+`System.Diagnostics.Process` operates on the **user-space side of this boundary** — it does not provide kernel-module functionality itself.
 
 ---
 
 ## 15. Standard Output Is Also an OS-Level Channel
 
-The script redirects output:
-
 ```fsharp
 psi.RedirectStandardOutput <- true
 ```
 
-and then reads:
+and later:
 
 ```fsharp
 proc.StandardOutput.ReadToEnd()
@@ -711,25 +603,13 @@ F# Process object
 StandardOutput
 ```
 
-This is another example of F# interacting with the operating system through .NET abstractions.
-
-The F# program is therefore not simply "running commands".
-
-It is managing:
-
-- process creation
-- process lifetime
-- exit codes
-- standard output
-- standard error
-- filesystem state
-- command sequencing
+The F# program is therefore not simply "running commands" — it is managing process creation, process lifetime, exit codes, standard output, standard error, filesystem state, and command sequencing, all through .NET's abstraction over the operating system.
 
 ---
 
 ## 16. Why the New Module Remains Loaded
 
-One important design decision is that the loop ends with:
+One deliberate design decision is that the loop ends with:
 
 ```text
 hello.ko
@@ -739,17 +619,7 @@ loaded
 running
 ```
 
-The development function does **not** call:
-
-```bash
-rmmod hello
-```
-
-after `show`.
-
-That would defeat the purpose of the development loop.
-
-Instead:
+The development function does **not** call `rmmod hello` after `show` — that would defeat the entire purpose of the loop:
 
 ```fsharp
 let devLoop () =
@@ -760,45 +630,33 @@ let devLoop () =
     show ()
 ```
 
-leaves the newly loaded module running.
-
-If the developer wants to remove it manually:
+The newly loaded module stays running. If it needs removing manually, that's a deliberate separate step:
 
 ```bash
 sudo rmmod hello
 ```
 
-can be executed afterward.
-
 ---
 
 ## 17. A Small but Useful Development Tool
 
-The project demonstrates an interesting combination:
+| Technology   | Role                          |
+| ------------ | ------------------------------ |
+| C            | Linux kernel module            |
+| Linux kernel | Module execution environment   |
+| Make         | Kernel module build            |
+| `sign-file`  | Module signing                 |
+| `insmod`     | Module loading                 |
+| `rmmod`      | Module unloading               |
+| `dmesg`      | Kernel log observation         |
+| .NET         | User-space runtime             |
+| F#           | Development orchestration      |
 
-| Technology   | Role                         |
-| ------------ | ----------------------------- |
-| C            | Linux kernel module          |
-| Linux kernel | Module execution environment |
-| Make         | Kernel module build          |
-| `sign-file`  | Module signing               |
-| `insmod`     | Module loading               |
-| `rmmod`      | Module unloading             |
-| `dmesg`      | Kernel log observation       |
-| .NET         | User-space runtime           |
-| F#           | Development orchestration    |
-
-The important idea is not the size of the script.
-
-The important idea is the **boundary between automation and the kernel**.
-
-F# provides a high-level orchestration layer while the actual low-level kernel implementation remains C.
+The interesting idea here isn't the size of the script — it's the **boundary between automation and the kernel**. F# provides a high-level orchestration layer while the low-level kernel implementation stays exactly where it belongs: in C.
 
 ---
 
 ## 18. Architecture Summary
-
-The complete architecture can be summarized as:
 
 ```text
 F# / .NET
@@ -828,7 +686,7 @@ hello_init()
 pr_info()
 ```
 
-The F# script is therefore best described as:
+The F# script is best described as:
 
 > **A user-space development orchestrator for a Linux kernel-space artifact.**
 
@@ -836,14 +694,10 @@ The F# script is therefore best described as:
 
 ## 19. Complete Workflow
 
-The resulting developer experience is:
-
 ```bash
 # Manual complete workflow
 dotnet fsi kloop.fsx loop
 ```
-
-or:
 
 ```bash
 # Automatic development workflow
@@ -878,7 +732,7 @@ insmod
 dmesg
 ```
 
-This removes repetitive command execution from the kernel-module development cycle while keeping the underlying Linux workflow explicit.
+This removes repetitive command execution from the kernel-module development cycle while keeping the underlying Linux workflow fully explicit and inspectable.
 
 ---
 
@@ -886,13 +740,7 @@ This removes repetitive command execution from the kernel-module development cyc
 
 This project is a practical example of using **F# as a systems-oriented automation language**.
 
-The kernel module remains low-level C code.
-
-Linux remains responsible for process management, module loading and kernel execution.
-
-.NET provides the managed process-control abstraction.
-
-F# ties everything together into a deterministic development pipeline:
+The kernel module remains low-level C code. Linux remains responsible for process management, module loading, and kernel execution. .NET provides the managed process-control abstraction. F# ties everything together into a deterministic development pipeline:
 
 ```text
 BUILD
@@ -902,16 +750,4 @@ BUILD
 → OBSERVE
 ```
 
-The result is a small but useful development tool that connects **F#, .NET process management and Linux kernel-module development** without hiding the underlying operating-system mechanisms.
-
----
-
-## GitHub Repository
-
-Source code, kernel module implementation and development tooling:
-
-**[linux_kernel_hello1](https://github.com/aj333git/linux_kernel_hello1)**
-
-Explore the complete project on GitHub:
-
-https://github.com/aj333git/linux_kernel_hello1
+The result is a small but genuinely useful development tool connecting **F#, .NET process management, and Linux kernel-module development** — without hiding any of the underlying operating-system mechanisms.
